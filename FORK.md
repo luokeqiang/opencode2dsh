@@ -28,7 +28,10 @@ DSH 执行，再把 `toolResult` 重新播种回下一轮。
 - `GET /permission` 失败时回退到 `GET /session/{id}/message` 的 in-flight tool parts。
 - 429 额度错误首次失败即可委托；403 `FreeTierError` 仍先走姊妹主机重放。
 - 宿主工具别名/参数改写（`webfetch`→`web_fetch`、`read.path`→`file_path` 等）。
-- 回归测试：委托套件 29 项，adapter 套件 10 项，全仓 449 项。
+- 丢弃同回合内缺失必填参数的重复工具调用（如只有 `description` 的第二个
+  `bash`），避免 DSH 报 `INVALID_ARGS`；只有调用是唯一一条时仍原样中继，
+  让模型看到宿主错误。
+- 回归测试：委托套件 30 项，adapter 套件 10 项，全仓 451 项。
 
 细节见 [docs/delegation.md](docs/delegation.md) §4.2。
 
@@ -81,7 +84,7 @@ pnpm pack
 - DSH `0.2.1-rc.5`
 - OpenCode 委托运行时 `1.18.35`
 - Node `>=20`（CI 用 24；本地测试用 26）
-- `pnpm typecheck` 干净，`pnpm test` 449/449
+- `pnpm typecheck` 干净，`pnpm test` 451/451
 - 实机：`grep`/`bash` 工具回合能返回 `tool_call` → `tool_result`，退出码 0
 
 ## 许可

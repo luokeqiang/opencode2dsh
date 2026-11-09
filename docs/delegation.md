@@ -141,4 +141,4 @@
 
 ## 8. 测试
 
-`test/delegate.test.ts`（29 项，mock `opencode serve` 本地端口）+ `test/delegation-adapter.test.ts`（10 项，adapter 兜底顺序）；全仓 `pnpm test` 449 项。覆盖：凭据种子（只取 `opencode` 条目 / 0600 / 候选优先级 / 缺凭据）、版本门槛 accept/reject、二进制回退顺序、HTTP-200-with-`info.error` 判失败、工具 ask-then-reject、工具中继的捕获/abort/回传、权限列表 400 时从 session message 回退、会话隔离清理、429 首次委托、非预期 tool part 拒绝、空回合诚实报错、adapter 兜底链（匿名 → 姊妹 → 委托 → 诚实错误）与「委托关闭路径逐字节不变」。
+`test/delegate.test.ts`（30 项，mock `opencode serve` 本地端口）+ `test/delegation-adapter.test.ts`（10 项，adapter 兜底顺序）；全仓 `pnpm test` 451 项。覆盖：凭据种子（只取 `opencode` 条目 / 0600 / 候选优先级 / 缺凭据）、版本门槛 accept/reject、二进制回退顺序、HTTP-200-with-`info.error` 判失败、工具 ask-then-reject、工具中继的捕获/abort/回传、权限列表 400 时从 session message 回退、会话隔离清理、429 首次委托、非预期 tool part 拒绝、空回合诚实报错、adapter 兜底链（匿名 → 姊妹 → 委托 → 诚实错误）与「委托关闭路径逐字节不变」。

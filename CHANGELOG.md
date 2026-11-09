@@ -1,5 +1,26 @@
 # Changelog
 
+## Fork — 0.3.15-dsh.2
+
+Maintained fork on top of upstream `37d3ea2`; see `FORK.md`.
+
+### Fixed
+
+- Malformed duplicate tool calls no longer surface `ToolArgsError: INVALID_ARGS`
+  in tools mode. The free delegate model occasionally appends a second `bash`
+  call carrying only `description` ("Run a shell command") next to a complete
+  sibling; relaying it made DSH reject the turn with
+  `invalid arguments: missing required property "command"`. The adapter now
+  checks each relayed call against the host schema's required arguments
+  (`required` array and property-level `required: true` both supported) and
+  drops calls that cannot execute when a complete sibling exists in the same
+  turn. A lone malformed call is still relayed so the host's error reaches the
+  model instead of silently returning an empty turn.
+
+### Tests
+
+- 451 total; `delegate.test.ts` 30, `delegation-adapter.test.ts` 10.
+
 ## Fork — 0.3.15-dsh.1
 
 Maintained fork on top of upstream `37d3ea2`; see `FORK.md`.
