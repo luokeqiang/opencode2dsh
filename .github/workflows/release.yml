@@ -77,18 +77,29 @@ jobs:
           sha256sum *.tgz > SHA256SUMS
           sha256sum -c SHA256SUMS
 
-      # Publish the curated CHANGELOG section instead of GitHub's auto-notes:
-      # direct pushes have no PRs, so --generate-notes emits only a compare link.
+      # Prefer a concise release-notes/<tag>.md; fall back to the full
+      # CHANGELOG section. GitHub's --generate-notes is unusable here because
+      # direct pushes have no PRs and produce only a compare link.
       - name: Compose release notes
         run: |
           version="${GITHUB_REF_NAME#v}"
-          awk -v prefix="## [$version] - " '
-            index($0, prefix) == 1 { capture = 1; print; next }
-            capture && /^## / { exit }
-            capture { print }
-          ' ../../CHANGELOG.md > dist/RELEASE_NOTES.md
+          test -s dist/SHA256SUMS || {
+            echo "dist/SHA256SUMS is missing" >&2
+            exit 1
+          }
+          notes_file="../../release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$notes_file" ]; then
+            cp "$notes_file" dist/RELEASE_NOTES.md
+          else
+            echo "no release-notes/${GITHUB_REF_NAME}.md; falling back to CHANGELOG.md" >&2
+            awk -v prefix="## [$version] - " '
+              index($0, prefix) == 1 { capture = 1; print; next }
+              capture && /^## / { exit }
+              capture { print }
+            ' ../../CHANGELOG.md > dist/RELEASE_NOTES.md
+          fi
           test -s dist/RELEASE_NOTES.md || {
-            echo "CHANGELOG.md has no section for $GITHUB_REF_NAME" >&2
+            echo "no release notes for $GITHUB_REF_NAME" >&2
             exit 1
           }
           perl -0pi -e 's/\n+\z/\n/' dist/RELEASE_NOTES.md
