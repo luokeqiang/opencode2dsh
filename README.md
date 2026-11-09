@@ -66,7 +66,7 @@ dsh plugin --profile web add @opencode2dsh/dsh-plugin
 **From source** (build this fork's tarball yourself):
 
 ```sh
-git clone <this-repo>
+git clone https://github.com/luokeqiang/opencode2dsh.git
 cd opencode2dsh/packages/plugin
 pnpm install && pnpm pack
 dsh plugin --profile web add ./opencode2dsh-dsh-plugin-<version>.tgz

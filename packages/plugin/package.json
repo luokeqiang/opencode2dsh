@@ -20,10 +20,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/FishBottle7/opencode2dsh.git"
+    "url": "git+https://github.com/luokeqiang/opencode2dsh.git"
   },
-  "homepage": "https://github.com/FishBottle7/opencode2dsh#readme",
-  "bugs": "https://github.com/FishBottle7/opencode2dsh/issues",
+  "homepage": "https://github.com/luokeqiang/opencode2dsh#readme",
+  "bugs": "https://github.com/luokeqiang/opencode2dsh/issues",
   "author": "FishBottle7 (https://github.com/FishBottle7)",
   "engines": {
     "node": ">=20"
