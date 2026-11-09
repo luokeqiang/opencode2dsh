@@ -44,6 +44,12 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # The suite imports the built artifacts (lib/index.js, lib/client.js).
+      - name: Build
+        run: |
+          pnpm build
+          pnpm build:client
+
       - name: Test
         run: pnpm test
 
