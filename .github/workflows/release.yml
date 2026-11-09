@@ -70,7 +70,12 @@ jobs:
       - name: Checksums
         run: |
           cd dist
+          test "$(ls -1 *.tgz | wc -l)" -eq 1 || {
+            echo "expected exactly one tarball" >&2
+            exit 1
+          }
           sha256sum *.tgz > SHA256SUMS
+          sha256sum -c SHA256SUMS
 
       # Publish the curated CHANGELOG section instead of GitHub's auto-notes:
       # direct pushes have no PRs, so --generate-notes emits only a compare link.
