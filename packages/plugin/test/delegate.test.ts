@@ -19,6 +19,7 @@ import {
   sessionPermissionArray,
 } from '../src/adapter/delegate.ts'
 import { toPiContext, type HarnessGenerateOptions } from '../src/adapter/messages.ts'
+import type { HarnessChunk } from '../src/adapter/events.ts'
 
 /** A scripted mock `opencode serve` speaking the issue's protocol shape. */
 interface MessageOutcome {
@@ -818,6 +819,65 @@ test('OpencodeDelegate.stream tools mode relays an aliased, schema-fitted tool-c
     ], 'alias applied, unknown args dropped, finish tells the host to execute')
     assert.deepEqual(mock.replies.map((reply) => reply.id), ['perm-7'], 'the delegate never granted the approval; it only dismissed it after the abort')
     assert.equal(mock.replies[0]?.body.reply, 'reject')
+    await delegate.dispose()
+  } finally {
+    await mock.close()
+    await cleanup()
+  }
+})
+
+test('OpencodeDelegate.stream tools mode drops a placeholder bash call when a complete sibling exists', async () => {
+  const mock = await mockOpencode()
+  const { dir, cleanup } = await tempHome()
+  try {
+    mock.onMessage(() => ({
+      delayUntilAbort: true,
+      info: { error: { name: 'MessageAbortedError' }, finish: 'stop', tokens: { input: 4, output: 2 } },
+      parts: [
+        abortedToolPart('call-good', 'bash', { command: 'ls -la' }),
+        abortedToolPart('call-empty', 'bash', { description: 'Run a shell command' }),
+      ],
+    }))
+    mock.raisePermission('perm-good', 'call-good', 'bash', { command: 'ls -la' })
+    mock.raisePermission('perm-empty', 'call-empty', 'bash', { description: 'Run a shell command' })
+    const delegate = new OpencodeDelegate({
+      dataDir: join(dir, 'dd'),
+      tools: true,
+      connect: async () => ({ baseUrl: mock.url, password: 'pw', version: '1.19.0', pid: null, stop: async () => {} }),
+    })
+    const hostTools = [{
+      name: 'bash',
+      description: 'run a shell command',
+      parameters: {
+        type: 'object',
+        properties: { command: { type: 'string' }, description: { type: 'string' } },
+        required: ['command'],
+      },
+    }]
+    const options: HarnessGenerateOptions = { ...turnOptions, tools: hostTools }
+    const chunks: HarnessChunk[] = []
+    for await (const chunk of delegate.stream(options, await toPiContext(options))) chunks.push(chunk)
+
+    type ToolCallEnd = Extract<HarnessChunk, { type: 'block-end' }> & {
+      block: { type: 'tool-call'; id: string; name: string; arguments: string }
+    }
+    const calls = chunks.filter((chunk): chunk is ToolCallEnd => {
+      if (chunk.type !== 'block-end') return false
+      return chunk.block.type === 'tool-call'
+    })
+    assert.equal(calls.length, 1, 'the empty placeholder is not relayed to the host')
+    const first = calls[0]
+    assert.ok(first !== undefined)
+    assert.deepEqual(JSON.parse(first.block.arguments), {
+      command: 'ls -la',
+      description: 'Run a shell command',
+    })
+    assert.deepEqual(chunks.at(-1), { type: 'finish', reason: { kind: 'tool-calls' } })
+    assert.deepEqual(
+      mock.replies.map((reply) => reply.id).sort(),
+      ['perm-empty', 'perm-good'],
+      'both approvals are still dismissed after the abort',
+    )
     await delegate.dispose()
   } finally {
     await mock.close()

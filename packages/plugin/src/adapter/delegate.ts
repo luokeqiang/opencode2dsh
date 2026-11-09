@@ -43,7 +43,7 @@ import { promisify } from 'node:util'
 import net from 'node:net'
 
 import type { HarnessChunk } from './events.ts'
-import { relayToolCall, type HarnessGenerateOptions, type PiContext } from './messages.ts'
+import { relayToolCall, isExecutableRelayCall, type HarnessGenerateOptions, type PiContext } from './messages.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -1238,13 +1238,30 @@ export class OpencodeDelegate implements DelegationDelegate {
     // harness tool-call blocks — the HOST executes them and re-seeds them as
     // toolResult history on the next request. Names/args are normalized to the
     // host's registry against THIS request's advertised tool list.
-    for (const call of turn.toolCalls ?? []) {
-      const relayed = relayToolCall(call.name, call.input, options.tools)
+    const relayed = (turn.toolCalls ?? []).map((call) => {
+      const normalized = relayToolCall(call.name, call.input, options.tools)
+      return {
+        call,
+        normalized,
+        executable: isExecutableRelayCall(normalized.name, normalized.input, options.tools),
+      }
+    })
+    // The free model occasionally appends a second `bash` call with only
+    // `description: "Run a shell command"`. It can never execute; when a
+    // complete sibling exists, relaying it only surfaces INVALID_ARGS in the
+    // transcript. Keep it when it is the only call so the host's error still
+    // reaches the model.
+    const anyExecutable = relayed.some((entry) => entry.executable)
+    for (const entry of relayed) {
+      if (anyExecutable && !entry.executable) {
+        this.#log(`dropping malformed relay call ${entry.call.name} ${JSON.stringify(entry.call.input)}`)
+        continue
+      }
       yield { type: 'block-start', index, blockType: 'tool-call' }
       yield {
         type: 'block-end',
         index,
-        block: { type: 'tool-call', id: call.id, name: relayed.name, arguments: JSON.stringify(relayed.input) },
+        block: { type: 'tool-call', id: entry.call.id, name: entry.normalized.name, arguments: JSON.stringify(entry.normalized.input) },
       }
       index += 1
     }

@@ -432,6 +432,35 @@ export function relayToolCall(
   return { name: aliased, input: out }
 }
 
+/**
+ * Whether a relayed call carries every argument the host schema marks
+ * required. A known failure mode of the free delegate model is a second
+ * `bash` call containing only `description` ("Run a shell command"); DSH
+ * rejects it with `INVALID_ARGS`. When the same turn also has a complete
+ * call, that placeholder cannot do useful work and only adds an error to the
+ * transcript — the stream drops it. Unknown tools / schemas without a
+ * `required` list stay executable so the host remains the judge.
+ */
+export function isExecutableRelayCall(
+  name: string,
+  input: Record<string, unknown>,
+  hostTools?: HarnessTool[],
+): boolean {
+  const host = hostTools?.find((tool) => tool.name === name)
+  if (host === undefined) return true
+  const schema = host.parameters as {
+    required?: unknown
+    properties?: Record<string, { required?: unknown } | undefined>
+  } | undefined
+  const required = Array.isArray(schema?.required)
+    ? schema.required.filter((key): key is string => typeof key === 'string')
+    : Object.entries(schema?.properties ?? {})
+        .filter(([, property]) => property?.required === true)
+        .map(([key]) => key)
+  if (required.length === 0) return true
+  return required.every((key) => input[key] !== undefined && input[key] !== null)
+}
+
 export interface FreeLaneGateTool {
   type: 'function'
   function: { name: string; description: string; parameters: Record<string, unknown> }

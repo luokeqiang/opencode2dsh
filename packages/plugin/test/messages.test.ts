@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ensureFreeLaneShape, relayToolCall, RELAY_TOOL_ALIASES, toPiContext, type HarnessGenerateOptions, type HarnessMessage, type HarnessTool, type PiMessage } from '../src/adapter/messages.ts'
+import { ensureFreeLaneShape, isExecutableRelayCall, relayToolCall, RELAY_TOOL_ALIASES, toPiContext, type HarnessGenerateOptions, type HarnessMessage, type HarnessTool, type PiMessage } from '../src/adapter/messages.ts'
 
 function expectAssistant(message: PiMessage | undefined): Extract<PiMessage, { role: 'assistant' }> {
   assert.equal(message?.role, 'assistant')
@@ -582,5 +582,28 @@ test('relayToolCall injects the host-required bash description exactly once', ()
   )
   // Without a host list nothing is injected (no schema to satisfy).
   assert.deepEqual(relayToolCall('bash', { command: 'ls' }).input, { command: 'ls' })
+})
+
+test('isExecutableRelayCall spots the empty bash placeholder the free model emits', () => {
+  const tools = [hostTool('bash', {
+    description: { type: 'string' },
+    command: { type: 'string', required: true },
+  })]
+  assert.equal(
+    isExecutableRelayCall('bash', { description: 'Run a shell command' }, tools),
+    false,
+    'a bash call with no command cannot execute',
+  )
+  assert.equal(isExecutableRelayCall('bash', { command: 'ls -la' }, tools), true)
+  assert.equal(
+    isExecutableRelayCall('read', { path: 'a.txt' }, tools),
+    true,
+    'a tool the host did not advertise is left to the host to judge',
+  )
+  assert.equal(
+    isExecutableRelayCall('bash', { description: 'Run a shell command' }),
+    true,
+    'without a host schema there is nothing to validate against',
+  )
 })
 
