@@ -45,7 +45,9 @@ DSH 执行，再把 `toolResult` 重新播种回下一轮。
 
 发布流程由 `.github/workflows/release.yml` 执行：`pnpm typecheck` →
 `pnpm test` → `pnpm pack` → 创建 GitHub Release，附带 `.tgz` 与
-`SHA256SUMS`；Release 正文取自 `CHANGELOG.md` 中对应版本的小节。CI 在
+`SHA256SUMS`。Release 正文取自 `CHANGELOG.md` 中对应版本的小节（Keep a
+Changelog 格式，带日期），并自动追加安装命令、`SHA256SUMS` 与 Full Changelog
+链接；工作流会校验 tag、`package.json` 和 `CHANGELOG.md` 的版本一致。CI 在
 `.github/workflows/ci.yml`。
 
 上游更新时：

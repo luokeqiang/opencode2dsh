@@ -1,6 +1,16 @@
 # Changelog
 
-## Fork — 0.3.15-dsh.2
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+Fork-local changes not yet released. Upstream's inherited unreleased notes are kept
+under [Upstream — Unreleased (inherited)](#upstream--unreleased-inherited) below.
+
+## [0.3.15-dsh.2] - 2026-11-09
 
 Maintained fork on top of upstream `37d3ea2`; see `FORK.md`.
 
@@ -17,11 +27,12 @@ Maintained fork on top of upstream `37d3ea2`; see `FORK.md`.
   turn. A lone malformed call is still relayed so the host's error reaches the
   model instead of silently returning an empty turn.
 
-### Tests
+### Changed
 
-- 451 total; `delegate.test.ts` 30, `delegation-adapter.test.ts` 10.
+- Test suite: 451/451. Headless tool relay verified across 3 runs (`bash`+`grep`,
+  parallel `bash`, parallel `bash`+`grep`); web `modelCatalog` returned 12 models.
 
-## Fork — 0.3.15-dsh.1
+## [0.3.15-dsh.1] - 2026-11-09
 
 Maintained fork on top of upstream `37d3ea2`; see `FORK.md`.
 
@@ -55,11 +66,12 @@ Maintained fork on top of upstream `37d3ea2`; see `FORK.md`.
   sessions can no longer be replayed into a fresh session; captured entries are
   `reject`-ed after the abort (never `allow`).
 
-### Tests
+### Changed
 
-- 449 total; `delegate.test.ts` 29, `delegation-adapter.test.ts` 10.
+- Test suite: 449/449. Headless `bash`/`grep` relay and web `modelCatalog`
+  verified.
 
-## Unreleased
+## Upstream — Unreleased (inherited)
 
 ### Added
 
@@ -269,3 +281,7 @@ IP 池发布（IP-0 … IP-7）：出口池与两级健康度、粘性会话路�
 
 免费模型目录修复：元数据弃用优先于免费名回退；marketplace 条目指向
 可安装的仓库根。
+
+[Unreleased]: https://github.com/luokeqiang/opencode2dsh/compare/v0.3.15-dsh.2...HEAD
+[0.3.15-dsh.2]: https://github.com/luokeqiang/opencode2dsh/compare/v0.3.15-dsh.1...v0.3.15-dsh.2
+[0.3.15-dsh.1]: https://github.com/luokeqiang/opencode2dsh/compare/37d3ea2...v0.3.15-dsh.1
