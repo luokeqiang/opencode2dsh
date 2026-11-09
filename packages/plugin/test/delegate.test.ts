@@ -12,6 +12,7 @@ import {
   buildDelegatePayload,
   DelegateSession,
   DELEGATE_PERMISSION_POLICY,
+  delegateChildEnv,
   findOpencodeBinary,
   MIN_OPENCODE_VERSION,
   OpencodeDelegate,
@@ -204,6 +205,27 @@ test('atLeastVersion compares numeric semver, accepting the floor and above', ()
 })
 
 // --- credential seeding ------------------------------------------------------
+
+test('delegateChildEnv forwards the egress proxy, keeps the XDG isolation, and drops everything else', () => {
+  const env = delegateChildEnv({
+    PATH: '/bin',
+    HOME: '/home/user',
+    HTTPS_PROXY: 'http://127.0.0.1:7897',
+    https_proxy: 'http://127.0.0.1:7897',
+    NO_PROXY: '127.0.0.1,localhost,::1',
+    NODE_USE_ENV_PROXY: '1',
+    ANTHROPIC_API_KEY: 'sk-must-not-leak',
+  }, '/isolated')
+
+  assert.equal(env.HTTPS_PROXY, 'http://127.0.0.1:7897')
+  assert.equal(env.https_proxy, 'http://127.0.0.1:7897')
+  assert.equal(env.NO_PROXY, '127.0.0.1,localhost,::1')
+  assert.equal(env.NODE_USE_ENV_PROXY, '1')
+  assert.equal(env.PATH, '/bin')
+  assert.equal(env.XDG_CONFIG_HOME, join('/isolated', 'config'))
+  assert.equal(env.XDG_DATA_HOME, join('/isolated', 'data'))
+  assert.equal(env.ANTHROPIC_API_KEY, undefined, 'other providers\' keys never reach the child')
+})
 
 test('seedDelegateAuth copies ONLY the opencode entry, never other providers', async () => {
   const { dir, cleanup } = await tempHome()

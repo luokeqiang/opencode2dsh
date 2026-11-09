@@ -10,6 +10,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Fork-local changes not yet released. Upstream's inherited unreleased notes are kept
 under [Upstream — Unreleased (inherited)](#upstream--unreleased-inherited) below.
 
+## [0.3.15-dsh.3] - 2026-11-10
+
+Maintained fork on top of upstream `37d3ea2`; see `FORK.md`.
+
+### Fixed
+
+- Delegation now works on networks that can only reach `opencode.ai` through an
+  egress proxy. The delegate child process forwards `HTTP_PROXY`,
+  `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` (and lowercase variants) plus
+  `NODE_USE_ENV_PROXY` from the host environment; previously the allow-list
+  dropped them, so `opencode serve` hung until the request timeout and every
+  free-lane 429 fell through to the anonymous error instead of being rescued.
+- A `429 FreeUsageLimitError` now reaches the delegated turn in ~16 s on the
+  reference deployment instead of timing out after 120 s.
+
+### Changed
+
+- Test suite: 452/452 (adds a regression pin for the forwarded proxy
+  allow-list).
+
 ## [0.3.15-dsh.2] - 2026-11-09
 
 Maintained fork on top of upstream `37d3ea2`; see `FORK.md`.

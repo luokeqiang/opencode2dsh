@@ -207,10 +207,35 @@ const FORWARDED_ENV = [
   'PATH', 'HOME', 'USER', 'LANG', 'TMPDIR', 'SHELL', 'SSL_CERT_FILE',
   'NODE_EXTRA_CA_CERTS', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'USERPROFILE',
   'APPDATA', 'LOCALAPPDATA', 'PATHEXT', 'COMSPEC',
+  // The delegate spawns the vendor runtime as a separate process; without the
+  // egress proxy it inherits it cannot reach the Zen hosts from a restricted
+  // network (hangs to the request timeout). Both spellings are forwarded
+  // because Node/Go/Bun clients disagree on which one they read.
+  'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+  'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
+  'NODE_USE_ENV_PROXY',
 ]
 
 /** XDG roots the isolated runtime uses, all under the delegate data dir. */
 const XDG_ROOTS = ['config', 'data', 'cache', 'state'] as const
+
+/**
+ * Build the allow-listed environment for the delegate child: identity and
+ * CA/locale basics, plus the egress proxy (the child is a separate process and
+ * cannot reach the Zen hosts from a proxied-only network without it), then the
+ * isolated XDG roots. Everything else — other providers' keys included — is
+ * dropped.
+ */
+export function delegateChildEnv(env: NodeJS.ProcessEnv, root: string): NodeJS.ProcessEnv {
+  const childEnv: NodeJS.ProcessEnv = {}
+  for (const key of FORWARDED_ENV) {
+    if (env[key]) childEnv[key] = env[key]
+  }
+  for (const dir of XDG_ROOTS) {
+    childEnv[`XDG_${dir.toUpperCase()}_HOME`] = join(root, dir)
+  }
+  return childEnv
+}
 
 export type DelegateAuthState = 'seeded' | 'present' | 'missing' | 'error'
 
@@ -544,13 +569,7 @@ export async function startOpencodeServe(binary: string, options: DelegateOption
     await mkdir(join(root, dir), { recursive: true, mode: 0o700 })
   }
 
-  const childEnv: NodeJS.ProcessEnv = {}
-  for (const key of FORWARDED_ENV) {
-    if (env[key]) childEnv[key] = env[key]
-  }
-  for (const dir of XDG_ROOTS) {
-    childEnv[`XDG_${dir.toUpperCase()}_HOME`] = join(root, dir)
-  }
+  const childEnv = delegateChildEnv(env, root)
   const toolsMode = options.tools === true
   const permissionPolicy = toolsMode ? DELEGATE_TOOL_PERMISSION_POLICY : DELEGATE_PERMISSION_POLICY
   Object.assign(childEnv, {
