@@ -106,6 +106,18 @@ export interface DelegationConfig {
   trimIntervalMs?: number
   /** Health-wait budget for the spawned server, ms. Default 60000. */
   startTimeoutMs?: number
+  /**
+   * Tools-relay mode (docs/delegation.md §4, design B). Default false: the
+   * text-only ceiling, ask-then-reject. True: native tool calls are captured
+   * at the approval gate, the turn is aborted, and the calls round-trip to the
+   * host (DSH) for execution — visible and executed in the host TUI.
+   */
+  tools?: boolean
+  /**
+   * Working directory the isolated runtime reports when `tools` is on.
+   * Default '': the host process cwd. Ignored in text-only mode.
+   */
+  cwd?: string
 }
 
 /** docs/ip-pool.md section 5.1 schema (subset owned by config today). */
@@ -246,6 +258,10 @@ export const Config = Schema.object({
     trimIntervalMs: Schema.number().step(1).min(0).default(DEFAULT_TRIM_INTERVAL_MS),
     /** Health-wait budget for the spawned server, ms. */
     startTimeoutMs: Schema.number().step(1).min(1_000).default(DEFAULT_START_TIMEOUT_MS),
+    /** Tools-relay mode: capture native calls at the gate, relay to the host. */
+    tools: Schema.boolean().default(false),
+    /** Tools-mode cwd; empty = the host process cwd. */
+    cwd: Schema.string().default(''),
   }),
 })
 

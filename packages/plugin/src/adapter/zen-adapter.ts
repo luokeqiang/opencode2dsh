@@ -335,9 +335,14 @@ function siblingZenBaseUrl(baseUrl: string): string | null {
  * classifyError's FREE_TIER_RESTRICTED spelling. Deliberately NOT RegionError:
  * a region block is a different refusal that re-running through a local runtime
  * with the same identity would not lift.
+ *
+ * Also matches the free-lane quota spellings (429 `FreeUsageLimitError`, "free
+ * usage limit reached"): those classify as 'limited' rather than 'refused', so
+ * the sibling replay never fires for them — delegation is their rescue path,
+ * and it must recognize them (folded in from the pre-0.3.15 lib patch).
  */
 export function isFreeTierRefusal(errorMessage: string): boolean {
-  return /\bFreeTierError\b|free tier can only be used from within opencode/i.test(errorMessage)
+  return /\bFreeTierError\b|free tier can only be used from within opencode|FreeUsageLimitError|free usage limit reached/i.test(errorMessage)
 }
 
 /**
@@ -815,7 +820,13 @@ export class ZenAdapter {
         // local opencode runtime instead of surfacing the error. Any other
         // failure class, a disabled delegate, a missing credential, or a failed
         // delegation all fall through to the honest error below.
-        if (this.#delegate !== null && attempt >= 1 && isFreeTierRefusal(failureMessage)) {
+        //
+        // `attempt >= 0` (folded in from the pre-0.3.15 lib patch): quota-lane
+        // failures (FreeUsageLimitError, classify → 'limited') never satisfy
+        // the rotate condition above, so with `>= 1` delegation could never
+        // fire for them. 'refused' still rotates first via `attempt < 1`, so
+        // the FreeTierError path keeps its sibling replay before delegating.
+        if (this.#delegate !== null && attempt >= 0 && isFreeTierRefusal(failureMessage)) {
           const delegated = await this.#runDelegation(options, context)
           if (delegated !== null) {
             for (const chunk of delegated) yield chunk

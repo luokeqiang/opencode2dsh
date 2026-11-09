@@ -27,6 +27,10 @@ interface MessageOutcome {
   parts?: Array<Record<string, unknown>>
   /** Hold the turn until the monitor refuses this permission id. */
   delayUntilReply?: string
+  /** Hold the turn until the monitor aborts the session (tools-relay mode). */
+  delayUntilAbort?: boolean
+  /** Hold a completed response for this long (lets a stale-capture monitor act first). */
+  delayMs?: number
 }
 type MessageHandler = (body: unknown) => MessageOutcome
 
@@ -43,8 +47,12 @@ interface MockOpencode {
   abortedSessions: string[]
   /** Configure how the next /session/{id}/message responds. */
   onMessage: (handler: MessageHandler | null) => void
-  /** Inject a pending permission the monitor should refuse. */
-  raisePermission: (id: string, callID: string) => void
+  /** Inject a pending permission (full v1.18.35 shape) for the monitor to see. */
+  raisePermission: (id: string, callID: string, permission?: string, metadata?: Record<string, unknown>, sessionID?: string) => void
+  /** Rows returned by GET /session/{id}/message (fallback capture). */
+  setSessionMessages: (messages: Array<{ parts?: Array<Record<string, unknown>> }>) => void
+  /** Poison GET /permission the way opencode's grep metadata does. */
+  breakPermissionList: (broken?: boolean) => void
 }
 
 function mockOpencode(): Promise<MockOpencode> {
@@ -54,9 +62,12 @@ function mockOpencode(): Promise<MockOpencode> {
   const messagesPosted: MockOpencode['messagesPosted'] = []
   const deletedSessions: string[] = []
   const abortedSessions: string[] = []
-  let pendingPermissions: Array<{ id: string; sessionID: string; tool: { callID: string } }> = []
+  let pendingPermissions: Array<{ id: string; sessionID: string; permission?: string; metadata?: Record<string, unknown>; tool: { callID: string } }> = []
+  let sessionMessages: Array<{ parts?: Array<Record<string, unknown>> }> = []
+  let permissionListBroken = false
   let messageHandler: MessageHandler | null = null
   let permissionWaiters: Array<() => void> = []
+  let abortWaiters: Array<() => void> = []
 
   return new Promise((resolve, reject) => {
     const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -77,6 +88,12 @@ function mockOpencode(): Promise<MockOpencode> {
           return respond(200, { id: 'ses_delegatemock' })
         }
         if (path === '/permission' && req.method === 'GET') {
+          if (permissionListBroken) {
+            return respond(400, {
+              name: 'BadRequest',
+              data: { message: 'Expected JSON value, got undefined\n  at [0]["metadata"]["include"]', kind: 'Body' },
+            })
+          }
           return respond(200, pendingPermissions)
         }
         const replyMatch = /^\/permission\/([^/]+)\/reply$/.exec(path)
@@ -90,6 +107,8 @@ function mockOpencode(): Promise<MockOpencode> {
         const abortMatch = /^\/session\/([^/]+)\/abort$/.exec(path)
         if (abortMatch && req.method === 'POST') {
           abortedSessions.push(decodeURIComponent(abortMatch[1] ?? ''))
+          // Wake a message POST that is holding until the abort (tools mode).
+          for (const wake of abortWaiters.splice(0)) wake()
           return respond(200, {})
         }
         const messageMatch = /^\/session\/([^/]+)\/message$/.exec(path)
@@ -99,6 +118,21 @@ function mockOpencode(): Promise<MockOpencode> {
           if (!handler) return respond(200, { info: { finish: 'stop', tokens: { input: 3, output: 4 } }, parts: [{ type: 'text', text: 'ok' }] })
           const outcome = handler(body)
           const send = (): void => respond(outcome.status ?? 200, { info: outcome.info ?? { finish: 'stop', tokens: { input: 1, output: 1 } }, parts: outcome.parts ?? [] })
+          if (outcome.delayMs !== undefined) {
+            setTimeout(send, outcome.delayMs)
+            return
+          }
+          if (outcome.delayUntilAbort) {
+            // Hold the turn open until the monitor aborts this session
+            // (tools-relay mode never replies to the approval).
+            const sid = decodeURIComponent(messageMatch[1] ?? '')
+            const trySend = (): void => {
+              if (abortedSessions.includes(sid)) send()
+              else abortWaiters.push(trySend)
+            }
+            trySend()
+            return
+          }
           if (outcome.delayUntilReply) {
             // Hold the turn open until the monitor refuses this permission id.
             const id = outcome.delayUntilReply
@@ -111,6 +145,7 @@ function mockOpencode(): Promise<MockOpencode> {
           }
           return send()
         }
+        if (messageMatch && req.method === 'GET') return respond(200, sessionMessages)
         const sessionMatch = /^\/session\/([^/]+)$/.exec(path)
         if (sessionMatch && req.method === 'DELETE') {
           deletedSessions.push(decodeURIComponent(sessionMatch[1] ?? ''))
@@ -133,10 +168,12 @@ function mockOpencode(): Promise<MockOpencode> {
         deletedSessions,
         abortedSessions,
         onMessage: (handler) => { messageHandler = handler },
-        raisePermission: (id, callID) => {
-          pendingPermissions.push({ id, sessionID: 'ses_delegatemock', tool: { callID } })
+        raisePermission: (id, callID, permission = 'bash', metadata = {}, sessionID = 'ses_delegatemock') => {
+          pendingPermissions.push({ id, sessionID, permission, metadata, tool: { callID } })
           for (const wake of permissionWaiters.splice(0)) wake()
         },
+        setSessionMessages: (messages) => { sessionMessages = messages },
+        breakPermissionList: (broken = true) => { permissionListBroken = broken },
       })
     })
   })
@@ -474,6 +511,248 @@ test('an empty turn (no content) is an honest empty_response, not a fake success
   }
 })
 
+// --- tools-relay mode (docs/delegation.md §4, design B) ----------------------
+
+/** The interrupted-error tool part shape the real runtime returns after abort. */
+function abortedToolPart(callID: string, tool: string, input: Record<string, unknown>): Record<string, unknown> {
+  return {
+    type: 'tool',
+    tool,
+    callID,
+    state: { status: 'error', input, error: 'Tool execution aborted', metadata: { interrupted: true } },
+  }
+}
+
+test('tools mode: the gate captures the call, aborts without replying, and returns it for relay', async () => {
+  const mock = await mockOpencode()
+  try {
+    mock.onMessage(() => ({
+      delayUntilAbort: true,
+      info: { error: { name: 'MessageAbortedError' }, finish: 'stop', tokens: { input: 2, output: 3 } },
+      parts: [abortedToolPart('call-1', 'bash', { command: 'ls -la' }), { type: 'text', text: 'checking' }],
+    }))
+    const session = new DelegateSession(mock.url, 'pw', { tools: true })
+    mock.raisePermission('perm-1', 'call-1', 'bash', { command: 'ls -la' })
+    const turn = await session.completeTurn(buildDelegatePayload(turnOptions, await toPiContext(turnOptions), true))
+
+    assert.deepEqual(mock.replies.map((reply) => reply.id), ['perm-1'], 'the captured approval is dismissed, exactly once')
+    assert.equal(mock.replies[0]?.body.reply, 'reject', 'the approval is NEVER granted — nothing may execute locally')
+    const abortAt = mock.log.findIndex((entry) => entry.method === 'POST' && /\/abort$/.test(entry.path))
+    const replyAt = mock.log.findIndex((entry) => entry.method === 'POST' && /\/reply$/.test(entry.path))
+    assert.ok(abortAt >= 0 && replyAt > abortAt, 'dismissal happens only after the abort captured the tool parts')
+    assert.deepEqual(mock.abortedSessions, ['ses_delegatemock'], 'the turn was aborted at the gate')
+    assert.equal(turn.finish, 'tool-calls')
+    assert.deepEqual(turn.toolCalls, [{ id: 'call-1', name: 'bash', input: { command: 'ls -la' } }])
+    assert.deepEqual(turn.parts, [{ type: 'text', text: 'checking' }], 'co-emitted text is kept for the host')
+
+    const created = mock.sessionsCreated[0]?.body as { permission: Array<{ permission: string; action: string }> }
+    assert.ok(created.permission.some((entry) => entry.permission === '*' && entry.action === 'ask'))
+    assert.ok(created.permission.some((entry) => entry.permission === 'task' && entry.action === 'deny'))
+    assert.ok(created.permission.some((entry) => entry.permission === 'codesearch' && entry.action === 'deny'))
+    assert.ok(!created.permission.some((entry) => entry.permission === 'bash'), 'bash must ASK, never be listed as deny')
+    assert.deepEqual(mock.deletedSessions, ['ses_delegatemock'], 'the aborted session is still cleaned up')
+  } finally {
+    await mock.close()
+  }
+})
+
+test('tools mode: a locally EXECUTED tool part fails the turn even after the abort', async () => {
+  const mock = await mockOpencode()
+  try {
+    // The abort is expected — but a non-errored tool part means an action RAN
+    // on this machine despite it. That must never pass as a relay.
+    mock.onMessage(() => ({
+      delayUntilAbort: true,
+      info: { error: { name: 'MessageAbortedError' }, finish: 'stop', tokens: { input: 1, output: 1 } },
+      parts: [{ type: 'tool', tool: 'bash', callID: 'call-1', state: { status: 'completed', input: { command: 'id' } } }],
+    }))
+    const session = new DelegateSession(mock.url, 'pw', { tools: true })
+    mock.raisePermission('perm-1', 'call-1')
+    await assert.rejects(
+      async () => session.completeTurn(buildDelegatePayload(turnOptions, await toPiContext(turnOptions), true)),
+      (error: unknown) => error instanceof Error && error.message.includes('executed a native tool'),
+    )
+    assert.ok(mock.replies.every((reply) => reply.body.reply === 'reject'), 'still never granted')
+  } finally {
+    await mock.close()
+  }
+})
+
+test('tools mode: only gate-captured calls are relayed — denied parts stay invisible', async () => {
+  const mock = await mockOpencode()
+  try {
+    mock.onMessage(() => ({
+      delayUntilAbort: true,
+      info: { error: { name: 'MessageAbortedError' }, finish: 'stop', tokens: { input: 1, output: 1 } },
+      parts: [
+        // call-2 was locally DENIED (never asked at the gate) — the model saw
+        // its own error; it is not harness work and must not round-trip.
+        abortedToolPart('call-2', 'task', { description: 'spawn' }),
+        abortedToolPart('call-1', 'read', { path: 'src/a.ts' }),
+      ],
+    }))
+    const session = new DelegateSession(mock.url, 'pw', { tools: true })
+    mock.raisePermission('perm-1', 'call-1', 'read', { path: 'src/a.ts' })
+    const turn = await session.completeTurn(buildDelegatePayload(turnOptions, await toPiContext(turnOptions), true))
+    assert.deepEqual(turn.toolCalls, [{ id: 'call-1', name: 'read', input: { path: 'src/a.ts' } }], 'exactly the captured call round-trips')
+  } finally {
+    await mock.close()
+  }
+})
+
+test('tools mode: a poisoned permission list falls back to session messages instead of spinning', async () => {
+  const mock = await mockOpencode()
+  try {
+    // opencode's grep tool asks with `metadata.include = undefined`, which the
+    // v1.18.35 approval-list schema rejects — the GLOBAL list then 400s until
+    // the runtime restarts. The session's own message parts still expose the
+    // in-flight call, so the relay must use them instead of polling forever.
+    mock.breakPermissionList()
+    mock.onMessage(() => ({
+      delayUntilAbort: true,
+      info: { error: { name: 'MessageAbortedError' }, finish: 'stop', tokens: { input: 2, output: 1 } },
+      parts: [abortedToolPart('call-grep', 'grep', { pattern: 'feishu', path: 'docs' })],
+    }))
+    mock.setSessionMessages([{
+      parts: [
+        { type: 'tool', tool: 'task', callID: 'call-denied', state: { status: 'running', input: { description: 'spawn' } } },
+        { type: 'tool', tool: 'grep', callID: 'call-grep', state: { status: 'running', input: { pattern: 'feishu', path: 'docs' } } },
+      ],
+    }])
+    const session = new DelegateSession(mock.url, 'pw', { tools: true })
+    const turn = await session.completeTurn(buildDelegatePayload(turnOptions, await toPiContext(turnOptions), true))
+
+    assert.equal(turn.finish, 'tool-calls')
+    assert.deepEqual(turn.toolCalls, [
+      { id: 'call-grep', name: 'grep', input: { pattern: 'feishu', path: 'docs' } },
+    ], 'the in-flight grep call round-trips; the locally denied task part stays invisible')
+    assert.deepEqual(mock.abortedSessions, ['ses_delegatemock'], 'the fallback still aborts — nothing executes locally')
+    assert.deepEqual(mock.replies, [], 'no permission id is known, so no reply is attempted')
+    const permissionPolls = mock.log.filter((entry) => entry.method === 'GET' && entry.path === '/permission').length
+    assert.ok(permissionPolls <= 2, `a broken list must not be polled in a tight loop (saw ${permissionPolls})`)
+  } finally {
+    await mock.close()
+  }
+})
+
+test('tools mode: an interrupted part missing from the fallback snapshot still relays', async () => {
+  const mock = await mockOpencode()
+  try {
+    // Protocol drift: the message poll sees call-1 and aborts, but the aborted
+    // response carries a different interrupted call. Its own `interrupted`
+    // marker is enough to relay it; a completed part would still fail the turn.
+    mock.breakPermissionList()
+    mock.onMessage(() => ({
+      delayUntilAbort: true,
+      info: { error: { name: 'MessageAbortedError' }, finish: 'stop', tokens: { input: 1, output: 1 } },
+      parts: [abortedToolPart('call-2', 'read', { path: 'src/a.ts' })],
+    }))
+    mock.setSessionMessages([{
+      parts: [{ type: 'tool', tool: 'bash', callID: 'call-1', state: { status: 'running', input: { command: 'ls' } } }],
+    }])
+    const session = new DelegateSession(mock.url, 'pw', { tools: true })
+    const turn = await session.completeTurn(buildDelegatePayload(turnOptions, await toPiContext(turnOptions), true))
+    assert.deepEqual(turn.toolCalls, [
+      { id: 'call-2', name: 'read', input: { path: 'src/a.ts' } },
+    ])
+  } finally {
+    await mock.close()
+  }
+})
+
+test('tools mode: lost tool parts fall back to the gate snapshot instead of failing', async () => {
+  const mock = await mockOpencode()
+  try {
+    // Protocol drift: the gate asked, but the aborted response carries no tool
+    // parts at all. The snapshot (name + metadata input) still relays the call.
+    mock.onMessage(() => ({
+      delayUntilAbort: true,
+      info: { error: { name: 'MessageAbortedError' }, finish: 'stop', tokens: { input: 1, output: 1 } },
+      parts: [],
+    }))
+    const session = new DelegateSession(mock.url, 'pw', { tools: true })
+    mock.raisePermission('perm-1', 'call-1', 'bash', { command: 'ls -la' })
+    const turn = await session.completeTurn(buildDelegatePayload(turnOptions, await toPiContext(turnOptions), true))
+    assert.equal(turn.finish, 'tool-calls')
+    assert.deepEqual(turn.toolCalls, [{ id: 'call-1', name: 'bash', input: { command: 'ls -la' } }])
+    assert.deepEqual(turn.parts, [], 'no text — the tool call alone carries the turn (no empty_response)')
+  } finally {
+    await mock.close()
+  }
+})
+
+test('tools mode: a foreign session\'s pending approval is ignored and never dismissed', async () => {
+  const mock = await mockOpencode()
+  try {
+    mock.onMessage(() => ({
+      delayUntilAbort: true,
+      info: { error: { name: 'MessageAbortedError' }, finish: 'stop', tokens: { input: 2, output: 1 } },
+      parts: [abortedToolPart('call-1', 'bash', { command: 'ls -la' })],
+    }))
+    const session = new DelegateSession(mock.url, 'pw', { tools: true })
+    // `GET /permission` is global: a leftover from an earlier session is visible
+    // to this monitor. It must neither be captured nor replied to (a `connect`
+    // runtime can be shared with the user's own opencode sessions).
+    mock.raisePermission('perm-stale', 'call-stale', 'bash', { command: 'rm -rf /tmp/x' }, 'ses_previous')
+    mock.raisePermission('perm-1', 'call-1', 'bash', { command: 'ls -la' })
+    const turn = await session.completeTurn(buildDelegatePayload(turnOptions, await toPiContext(turnOptions), true))
+
+    assert.deepEqual(turn.toolCalls, [{ id: 'call-1', name: 'bash', input: { command: 'ls -la' } }], 'only the CURRENT session\'s call is relayed')
+    assert.deepEqual(mock.replies.map((reply) => reply.id), ['perm-1'], 'the foreign pending approval is left untouched')
+  } finally {
+    await mock.close()
+  }
+})
+
+test('tools mode: the dismissed approval cannot be replayed into the next session', async () => {
+  const mock = await mockOpencode()
+  try {
+    mock.onMessage(() => ({
+      delayUntilAbort: true,
+      info: { error: { name: 'MessageAbortedError' }, finish: 'stop', tokens: { input: 2, output: 1 } },
+      parts: [abortedToolPart('call-1', 'bash', { command: 'ls -la' })],
+    }))
+    const session = new DelegateSession(mock.url, 'pw', { tools: true })
+    mock.raisePermission('perm-1', 'call-1', 'bash', { command: 'ls -la' })
+    const first = await session.completeTurn(buildDelegatePayload(turnOptions, await toPiContext(turnOptions), true))
+    assert.equal(first.finish, 'tool-calls')
+
+    // A new turn starts a fresh session. If the gate left the approval pending,
+    // its monitor would capture the OLD callID and abort this turn ~200ms in —
+    // the infinite relay loop. `delayMs` leaves the monitor ample time to act.
+    mock.onMessage(() => ({
+      delayMs: 500,
+      info: { finish: 'stop', tokens: { input: 3, output: 2 } },
+      parts: [{ type: 'text', text: 'done' }],
+    }))
+    const second = await session.completeTurn(buildDelegatePayload(turnOptions, await toPiContext(turnOptions), true))
+
+    assert.equal(second.finish, 'stop', 'the next turn answers normally instead of relaying a stale call')
+    assert.equal(second.toolCalls, undefined)
+    assert.deepEqual(second.parts, [{ type: 'text', text: 'done' }])
+    assert.deepEqual(mock.abortedSessions, ['ses_delegatemock'], 'only the first turn was aborted at the gate')
+  } finally {
+    await mock.close()
+  }
+})
+
+test('tools payload preaches the relay contract; the text payload still says no tools', async () => {
+  const { dir, cleanup } = await tempHome()
+  try {
+    const context = await toPiContext(turnOptions)
+    const toolsPayload = buildDelegatePayload(turnOptions, context, true) as { system: string; parts: Array<{ text: string }> }
+    assert.match(toolsPayload.system, /relayed to an\s+external harness/)
+    assert.match(toolsPayload.system, /END YOUR TURN/)
+    assert.ok(!toolsPayload.system.includes('You have no tools'), 'the tools payload must not claim the model is toolless')
+
+    const textPayload = buildDelegatePayload(turnOptions, context) as { system: string; parts: Array<{ text: string }> }
+    assert.match(textPayload.system, /You have no tools/, 'default payload keeps the text-only ceiling')
+    assert.deepEqual(toolsPayload.parts, textPayload.parts, 'both modes re-seed the same JSON conversation')
+  } finally {
+    await cleanup()
+  }
+})
+
 // --- OpencodeDelegate end-to-end against the mock ----------------------------
 
 test('OpencodeDelegate.stream translates a mock turn into a harness chunk stream', async () => {
@@ -497,6 +776,48 @@ test('OpencodeDelegate.stream translates a mock turn into a harness chunk stream
       { type: 'usage', usage: { inputTokens: 9, outputTokens: 6 } },
       { type: 'finish', reason: { kind: 'stop' } },
     ])
+    await delegate.dispose()
+  } finally {
+    await mock.close()
+    await cleanup()
+  }
+})
+
+test('OpencodeDelegate.stream tools mode relays an aliased, schema-fitted tool-call block', async () => {
+  const mock = await mockOpencode()
+  const { dir, cleanup } = await tempHome()
+  try {
+    mock.onMessage(() => ({
+      delayUntilAbort: true,
+      info: { error: { name: 'MessageAbortedError' }, finish: 'stop', tokens: { input: 4, output: 2 } },
+      parts: [abortedToolPart('call-7', 'webfetch', { url: 'https://example.com', inline: true, detail: 'full' })],
+    }))
+    const delegate = new OpencodeDelegate({
+      dataDir: join(dir, 'dd'),
+      tools: true,
+      connect: async () => ({ baseUrl: mock.url, password: 'pw', version: '1.19.0', pid: null, stop: async () => {} }),
+    })
+    // The host advertises web_fetch with ONLY url — extra delegate-native keys
+    // must be dropped so strict host validation accepts the call.
+    const hostTools = [{ name: 'web_fetch', description: 'fetch a url', parameters: { type: 'object', properties: { url: { type: 'string', required: true } } } }]
+    const options: HarnessGenerateOptions = { ...turnOptions, tools: hostTools }
+    mock.raisePermission('perm-7', 'call-7', 'webfetch', { url: 'https://example.com', inline: true })
+
+    const chunks = []
+    for await (const chunk of delegate.stream(options, await toPiContext(options))) chunks.push(chunk)
+
+    assert.deepEqual(chunks, [
+      { type: 'block-start', index: 0, blockType: 'tool-call' },
+      {
+        type: 'block-end',
+        index: 0,
+        block: { type: 'tool-call', id: 'call-7', name: 'web_fetch', arguments: JSON.stringify({ url: 'https://example.com' }) },
+      },
+      { type: 'usage', usage: { inputTokens: 4, outputTokens: 2 } },
+      { type: 'finish', reason: { kind: 'tool-calls' } },
+    ], 'alias applied, unknown args dropped, finish tells the host to execute')
+    assert.deepEqual(mock.replies.map((reply) => reply.id), ['perm-7'], 'the delegate never granted the approval; it only dismissed it after the abort')
+    assert.equal(mock.replies[0]?.body.reply, 'reject')
     await delegate.dispose()
   } finally {
     await mock.close()

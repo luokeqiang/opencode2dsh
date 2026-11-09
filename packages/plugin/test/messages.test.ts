@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ensureFreeLaneShape, toPiContext, type HarnessGenerateOptions, type HarnessMessage, type PiMessage } from '../src/adapter/messages.ts'
+import { ensureFreeLaneShape, relayToolCall, RELAY_TOOL_ALIASES, toPiContext, type HarnessGenerateOptions, type HarnessMessage, type HarnessTool, type PiMessage } from '../src/adapter/messages.ts'
 
 function expectAssistant(message: PiMessage | undefined): Extract<PiMessage, { role: 'assistant' }> {
   assert.equal(message?.role, 'assistant')
@@ -512,5 +512,75 @@ test('Responses free-lane bodies carry flat gate tools and supported tool choice
   assert.equal(rewritten.tool_choice, 'auto')
   assert.equal(ensureResponsesFreeLaneShape(rewritten), undefined)
   assert.equal(ensureResponsesFreeLaneShape({ messages: [] }), undefined)
+})
+
+// --- delegation tool relay (docs/delegation.md §4, design B) -----------------
+
+/** A host tool list in the DSH registry's dialect (snake_case, per-key required). */
+function hostTool(name: string, properties: Record<string, unknown>): HarnessTool {
+  return { name, description: `${name} host tool`, parameters: { type: 'object', properties } }
+}
+
+test('relayToolCall aliases only the divergent names and passes the shared ones through', () => {
+  assert.deepEqual(RELAY_TOOL_ALIASES, {
+    webfetch: 'web_fetch',
+    websearch: 'web_search',
+    question: 'ask_user_question',
+    todowrite: 'todo_write',
+  }, 'the alias table is exactly the verified host mapping')
+  assert.equal(relayToolCall('bash', { command: 'ls' }).name, 'bash')
+  assert.equal(relayToolCall('read', { path: 'a.txt' }).name, 'read')
+  assert.equal(relayToolCall('edit', { filePath: 'a' }).name, 'edit')
+  assert.equal(relayToolCall('glob', { pattern: '*.ts' }).name, 'glob')
+  assert.equal(relayToolCall('grep', { pattern: 'x' }).name, 'grep')
+  assert.equal(relayToolCall('webfetch', { url: 'https://x' }).name, 'web_fetch')
+  assert.equal(relayToolCall('question', { questions: [] }).name, 'ask_user_question')
+})
+
+test('relayToolCall renames opencode camelCase arguments to the host snake_case schema', () => {
+  assert.deepEqual(relayToolCall('read', { path: 'src/a.ts', offset: 3, limit: 10 }).input, {
+    file_path: 'src/a.ts',
+    offset: 3,
+    limit: 10,
+  })
+  assert.deepEqual(relayToolCall('edit', { filePath: 'a.ts', oldString: 'x', newString: 'y', replaceAll: true }).input, {
+    file_path: 'a.ts',
+    old_string: 'x',
+    new_string: 'y',
+    replace_all: true,
+  })
+  assert.deepEqual(relayToolCall('write', { filePath: 'a.ts', content: 'hi' }).input, { file_path: 'a.ts', content: 'hi' })
+  // Unknown camelCase keys still snake_case without a rename entry.
+  assert.deepEqual(relayToolCall('bash', { command: 'ls', timeoutMs: 500 }).input, { command: 'ls', timeout_ms: 500 })
+})
+
+test('relayToolCall expands web_search singular query into the host queries array', () => {
+  assert.deepEqual(relayToolCall('websearch', { query: 'opencode' }).input, { queries: ['opencode'] })
+  // An already-formed queries array passes through untouched.
+  assert.deepEqual(relayToolCall('websearch', { queries: ['a', 'b'] }).input, { queries: ['a', 'b'] })
+})
+
+test('relayToolCall drops arguments the host schema does not declare, only when a host list is given', () => {
+  const tools = [hostTool('web_fetch', { url: { type: 'string', required: true } })]
+  assert.deepEqual(
+    relayToolCall('webfetch', { url: 'https://x', inline: true, detail: 'full' }, tools).input,
+    { url: 'https://x' },
+    'unknown keys are dropped so strict validation never rejects the call',
+  )
+  // No host list: renames still apply, extra keys are kept (the host's own
+  // validation result flows back to the model as the tool error).
+  assert.deepEqual(relayToolCall('webfetch', { url: 'https://x', inline: true }).input, { url: 'https://x', inline: true })
+})
+
+test('relayToolCall injects the host-required bash description exactly once', () => {
+  const tools = [hostTool('bash', { description: { type: 'string', required: true }, command: { type: 'string', required: true } })]
+  assert.deepEqual(relayToolCall('bash', { command: 'ls' }, tools).input, { command: 'ls', description: 'Run a shell command' })
+  assert.deepEqual(
+    relayToolCall('bash', { command: 'ls', description: 'List files' }, tools).input,
+    { command: 'ls', description: 'List files' },
+    'a model-provided description is never overwritten',
+  )
+  // Without a host list nothing is injected (no schema to satisfy).
+  assert.deepEqual(relayToolCall('bash', { command: 'ls' }).input, { command: 'ls' })
 })
 

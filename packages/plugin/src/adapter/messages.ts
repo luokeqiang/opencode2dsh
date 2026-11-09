@@ -365,6 +365,73 @@ export const FREE_LANE_GATE_TOOL_NAMES = ['bash', 'read'] as const
  */
 export const GATE_TOOL_ALIASES: Record<string, string> = {}
 
+/**
+ * Delegation tool relay (docs/delegation.md §4): names the isolated runtime's
+ * NATIVE tool calls are rewritten to before they reach the host, and the
+ * per-tool argument renames from opencode's spelling to the host's snake_case
+ * schema. Names absent here pass through unchanged (bash/read/edit/glob/grep
+ * already match the host registry). `task`/`codesearch`/`plan_*` never reach
+ * this table: the tools-mode permission policy denies them locally.
+ */
+export const RELAY_TOOL_ALIASES: Record<string, string> = {
+  webfetch: 'web_fetch',
+  websearch: 'web_search',
+  question: 'ask_user_question',
+  todowrite: 'todo_write',
+}
+
+/** Argument renames keyed by the ORIGINAL (delegate-native) tool name. */
+const RELAY_ARG_RENAMES: Record<string, Record<string, string>> = {
+  read: { path: 'file_path' },
+  write: { filePath: 'file_path' },
+  edit: {
+    filePath: 'file_path',
+    oldString: 'old_string',
+    newString: 'new_string',
+    replaceAll: 'replace_all',
+  },
+}
+
+/**
+ * Rewrite one delegate-native tool call into the shape the host will accept:
+ * alias the name, apply the per-tool renames, snake_case any remaining camel
+ * keys, expand web_search's singular `query` into its `queries` array, inject
+ * the host-required bash `description`, and — when the harness advertised this
+ * request's tools — drop every argument the host schema does not declare, so
+ * strict validation can never reject the call on an unknown key. Without a
+ * host tool list only the renames apply (the call is still attempted; the
+ * host's own validation result flows back to the model as the tool error).
+ */
+export function relayToolCall(
+  name: string,
+  input: Record<string, unknown>,
+  hostTools?: HarnessTool[],
+): { name: string; input: Record<string, unknown> } {
+  const aliased = RELAY_TOOL_ALIASES[name] ?? name
+  let args: Record<string, unknown> = { ...input }
+  if (aliased === 'web_search' && typeof args.query === 'string' && !('queries' in args)) {
+    args = { ...args, queries: [args.query] }
+    delete args.query
+  }
+  const host = hostTools?.find((tool) => tool.name === aliased)
+  const properties = (host?.parameters as { properties?: Record<string, unknown> } | undefined)?.properties
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(args)) {
+    const candidates = [RELAY_ARG_RENAMES[name]?.[key], key.replace(/([A-Z])/g, '_$1').toLowerCase(), key]
+    for (const candidate of candidates) {
+      if (candidate === undefined) continue
+      if (properties === undefined || candidate in properties) {
+        if (!(candidate in out)) out[candidate] = value
+        break
+      }
+    }
+  }
+  if (aliased === 'bash' && properties !== undefined && 'description' in properties && !('description' in out)) {
+    out.description = 'Run a shell command'
+  }
+  return { name: aliased, input: out }
+}
+
 export interface FreeLaneGateTool {
   type: 'function'
   function: { name: string; description: string; parameters: Record<string, unknown> }

@@ -128,6 +128,8 @@ test('Config declares the delegation block, disabled by default, with per-field 
   assert.equal(config.delegation.trimIntervalMs, 60_000)
   assert.equal(config.delegation.startTimeoutMs, 60_000)
   assert.equal(config.delegation.opencodePath, '')
+  assert.equal(config.delegation.tools, false, 'tools-relay is opt-in: absent keeps the text-only ceiling')
+  assert.equal(config.delegation.cwd, '', 'empty cwd means the host process cwd')
 
   const custom = Config({ delegation: { enabled: true, opencodePath: '/usr/bin/opencode', gcPercent: 50, trimIntervalMs: 0 } })
   assert.equal(custom.delegation.opencodePath, '/usr/bin/opencode')

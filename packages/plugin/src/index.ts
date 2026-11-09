@@ -247,6 +247,7 @@ function createDelegate(
   logger: PluginContext['logger'],
 ): DelegationDelegate | null {
   if (!delegation?.enabled) return null
+  const cwd = delegation.cwd?.trim()
   return new OpencodeDelegate({
     dataDir,
     opencodePath: delegation.opencodePath?.trim() ? delegation.opencodePath.trim() : undefined,
@@ -255,6 +256,10 @@ function createDelegate(
     gcPercent: delegation.gcPercent,
     trimIntervalMs: delegation.trimIntervalMs,
     startTimeoutMs: delegation.startTimeoutMs,
+    // Tools-relay mode (docs/delegation.md §4): opt-in per profile; an empty
+    // cwd leaves the delegate to fall back to the host process cwd.
+    tools: delegation.tools === true,
+    cwd: cwd && cwd.length > 0 ? cwd : undefined,
     log: (message) => logger.info(message),
   })
 }

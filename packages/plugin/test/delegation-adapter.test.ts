@@ -128,6 +128,13 @@ test('isFreeTierRefusal matches the credential gate and nothing else', () => {
   assert.equal(isFreeTierRefusal('connection reset'), false)
 })
 
+test('isFreeTierRefusal also matches the free-lane quota spellings (folded lib patch)', () => {
+  assert.equal(isFreeTierRefusal('429 FreeUsageLimitError: free usage limit reached'), true)
+  assert.equal(isFreeTierRefusal('429 free usage limit reached'), true)
+  // A generic 429 with neither spelling is still NOT a delegation-class refusal.
+  assert.equal(isFreeTierRefusal('429 Too Many Requests'), false)
+})
+
 test('delegation off: persistent refusal surfaces the honest error and never consults a delegate', async () => {
   const { adapter, calls } = scripted([freeTierRefused(), freeTierRefused()])
   const chunks = await collect(adapter)
@@ -148,6 +155,29 @@ test('delegation on: a persistent FreeTierError refusal runs the turn through th
 
   assert.equal(wire.length, 2, 'direct + sibling both refused before delegating')
   assert.equal(calls.ready, 1, 'delegate readiness probed once')
+  assert.equal(calls.stream, 1, 'exactly one delegated turn')
+  assert.deepEqual(chunks, delegateChunks, 'the delegated stream is what the user sees')
+})
+
+test('delegation on: a 429 FreeUsageLimitError delegates on the FIRST attempt (folded lib patch)', async () => {
+  // Quota failures classify as 'limited', never 'refused', so the sibling
+  // replay never fires for them — with the old `attempt >= 1` guard the
+  // delegate was unreachable. `attempt >= 0` (folded into source) fixes that.
+  const quotaRefused: PiEvent[] = [{
+    type: 'error',
+    error: message({
+      stopReason: 'error',
+      content: [],
+      errorMessage: '429 FreeUsageLimitError: free usage limit reached',
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+    }),
+  }]
+  const calls = { ready: 0, stream: 0 }
+  const delegate = fakeDelegate({ chunks: delegateChunks }, calls)
+  const { adapter, calls: wire } = scripted([quotaRefused], delegate)
+  const chunks = await collect(adapter)
+
+  assert.equal(wire.length, 1, 'no sibling replay for a quota failure — straight to delegation')
   assert.equal(calls.stream, 1, 'exactly one delegated turn')
   assert.deepEqual(chunks, delegateChunks, 'the delegated stream is what the user sees')
 })
