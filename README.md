@@ -15,6 +15,12 @@ English | [简体中文](README.zh-CN.md)
 
 </div>
 
+> **Fork notice:** this is a maintained fork of
+> [FishBottle7/opencode2dsh](https://github.com/FishBottle7/opencode2dsh).
+> It adds an opt-in tools-relay mode (DSH executes the tools) and the
+> 429/permission-gate fixes. The npm package is still upstream's; install this
+> fork from [Releases](../../releases/latest). See [FORK.md](FORK.md).
+
 ---
 
 opencode2dsh registers a native DSH `LlmAdapter` that streams directly from
@@ -40,20 +46,27 @@ nothing to host.
 
 ## Install
 
-**From the plugin market** (recommended, once this repo is listed there):
+**From this fork's [Releases](../../releases/latest)** (recommended for this
+fork; includes the tools-relay changes): download the `.tgz`, then:
+
+```sh
+dsh plugin --profile web add ./opencode2dsh-dsh-plugin-<version>.tgz
+```
+
+**From the plugin market** (upstream package; once this repo is listed there):
 in DSH open **Settings → Plugin Market**, search `opencode2dsh`, one-click
 install.
 
-**From npm**:
+**From npm** (upstream package; does not include the tools-relay changes):
 
 ```sh
 dsh plugin --profile web add @opencode2dsh/dsh-plugin
 ```
 
-**From source** (build the tarball yourself):
+**From source** (build this fork's tarball yourself):
 
 ```sh
-git clone https://github.com/FishBottle7/opencode2dsh.git
+git clone <this-repo>
 cd opencode2dsh/packages/plugin
 pnpm install && pnpm pack
 dsh plugin --profile web add ./opencode2dsh-dsh-plugin-<version>.tgz

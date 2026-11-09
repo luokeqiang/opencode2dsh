@@ -1,5 +1,43 @@
 # Changelog
 
+## Fork — unreleased
+
+Maintained fork on top of upstream `37d3ea2`; see `FORK.md`.
+
+### Added
+
+- `delegation.tools` (default `false`) — tools-relay mode (design B). Native
+  tool calls are captured at the approval gate, the delegate turn is aborted,
+  and the calls are relayed to DSH for execution; results re-enter the next
+  request as `toolResult` history.
+- `delegation.cwd` (default `''`) — working directory the isolated runtime
+  reports in tools mode; empty keeps the DSH process cwd. Text-only mode still
+  stays confined to its isolated project directory.
+- Host-name/argument rewriting for relayed calls: `webfetch`→`web_fetch`,
+  `websearch`→`web_search` (`query`→`queries[]`), `question`→`ask_user_question`,
+  `todowrite`→`todo_write`, plus `read`/`write`/`edit` path/key renames.
+  `task`/`codesearch`/`plan_*` remain locally denied because they have no
+  verified host counterpart.
+
+### Fixed
+
+- Free-quota `429 FreeUsageLimitError` / `free usage limit reached` now
+  triggers delegation on the first failed attempt. The old `attempt >= 1`
+  condition only fired after a sibling replay, but quota failures classify as
+  `limited` and never replay, so delegation could not fire at all.
+- Tools-mode turns no longer deadlock when `GET /permission` is poisoned by
+  OpenCode 1.18.35's `grep` (`metadata.include = undefined` → HTTP 400). The
+  monitor falls back to the session's own message parts, captures the
+  in-flight `callID`/`state.input`, and aborts; it never approves and never
+  spins on the failing list.
+- Tools-mode capture is session-scoped. Pending approvals from deleted/foreign
+  sessions can no longer be replayed into a fresh session; captured entries are
+  `reject`-ed after the abort (never `allow`).
+
+### Tests
+
+- 449 total; `delegate.test.ts` 29, `delegation-adapter.test.ts` 10.
+
 ## Unreleased
 
 ### Added

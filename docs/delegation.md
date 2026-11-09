@@ -1,6 +1,6 @@
 # opencode2dsh 本地 OpenCode 委托 — 设计与安全姿态
 
-> 状态：已实现（issue #76）。关联：`docs/ts-adapter.md`（adapter 形态）、`docs/ip-pool.md`（多出口轮换，委托触发前的第一道兜底）。
+> 状态：已实现（issue #76）；本 fork 追加 429 立即委托与工具中继（design B，§4.2）。关联：`docs/ts-adapter.md`（adapter 形态）、`docs/ip-pool.md`（多出口轮换，委托触发前的第一道兜底）。
 > 参考实现（MIT）：[reisen-ww/opengate](https://github.com/reisen-ww/opengate) 的 `delegate.mjs` + `vendor/`（dsh-opencode-xdbridge）。本模块的协议形状、凭据种子、版本门槛、内存约束、工具中介均移植自该实现，协议分歧一律以参考实现为准。
 
 ## 0. 动机：匿名通道救不回来的那部分用户
@@ -16,14 +16,18 @@
 委托是**最后兜底**，不是首选通道。全部条件同时成立才触发：
 
 1. 匿名车道一次尝试在**送达任何内容之前**失败；
-2. 失败是 `FreeTierError` 凭据门禁（`isFreeTierRefusal`，不是 `RegionError`、不是 429）；
-3. **姊妹主机重试也拒绝**（持续拒绝）——旋转循环耗尽（`attempt ≥ 1`）；
+2. 失败属于以下两类之一：
+   - `FreeTierError` 凭据门禁（`isFreeTierRefusal`，不是 `RegionError`）；
+   - 免费额度限流：`FreeUsageLimitError` 或 `free usage limit reached`（分类为 `limited`，不是 `refused`）；
+3. 对 `FreeTierError`，**姊妹主机重试也拒绝**（持续拒绝）——旋转循环耗尽（`attempt ≥ 1`）；
+   额度类错误不会触发姊妹主机重放，首次失败（`attempt = 0`）即可委托；
 4. 用户**显式开启** `delegation.enabled` 且委托就绪（见 §3）。
 
 任一不满足 → 原样透出匿名车道的诚实错误，委托完全不进路径。开启委托但缺凭据 / 委托进程起不来 / 委托回合失败，同样回退到诚实错误，**绝不**把半成品内容漏给用户。
 
-```
+```text
 匿名直连 →（403 FreeTierError）→ 姊妹主机重试 →（仍 403 FreeTierError）→ 本地 opencode 委托 →（失败）→ 诚实错误
+匿名直连 →（429 FreeUsageLimitError / free usage limit reached）──────────→ 本地 opencode 委托 →（失败）→ 诚实错误
               └────── IP 池有其它出口时，中间还可能插入出口轮换（docs/ip-pool.md §3.4）──────┘
 ```
 
@@ -35,7 +39,7 @@
 - **绝不外泄**：凭据值**永不写日志**（任何路径），只记录来源文件路径；隔离运行时只读它自己数据目录里的那一份。
 - **绝不搬运无关密钥**：其它 provider 的 key 不读入结果对象、不落盘、不日志。
 - **账号风险自负**：把个人凭据灌进第三方 adapter 做代理，若被上游判定为异常使用，后果由用户账号承担。**这是开启前必须接受的风险**，README 与本文档均如实标注。
-- **本地执行面**：opencode serve 原生工具的执行面靠桥接层拒绝兜底——中介出 bug 就是本地命令执行，所以工具中介是三层纵深（§4），不是单层。
+- **本地执行面**：默认纯文本模式靠 ask-then-reject 三层纵深（§4.1）；`tools: true` 时仍然不批准任何本地审批，改为在审批门捕获调用并 abort，由宿主执行（§4.2）。两种模式都必须保证本地零执行——中介出 bug 就是本地命令执行，所以这是硬约束。
 
 ## 3. 配置
 
@@ -53,6 +57,8 @@
       # gcPercent: 30      # 注入子进程的 GOGC
       # trimIntervalMs: 60000  # EmptyWorkingSet 内存回收节拍；0 关闭
       # startTimeoutMs: 60000  # 等子进程健康的预算
+      # tools: false       # 工具中继开关（design B）；true = 原生调用回传宿主执行
+      # cwd: ''            # 工具模式工作目录；空 = DSH 进程 cwd
 ```
 
 | 字段 | 默认 | 说明 |
@@ -64,18 +70,50 @@
 | `gcPercent` | `30` | 注入子进程的 `GOGC`（更激进的 GC 频率）。 |
 | `trimIntervalMs` | `60000` | Windows 上 `EmptyWorkingSet` 换出物理页的节拍；`0` 关闭（内存约束仍生效）。 |
 | `startTimeoutMs` | `60000` | 等 `opencode serve` 健康的预算。 |
+| `tools` | `false` | 工具中继开关（§4.2）。`false` 保持纯文本 ask-then-reject；`true` 把原生工具调用捕获后回传宿主执行。 |
+| `cwd` | `''` | 工具模式的委托工作目录。空 = DSH 进程的 `process.cwd()`；绝对路径 = 固定目录；不存在时回退隔离目录。文本模式忽略。 |
 
 没登录过 opencode CLI（找不到凭据）→ 委托不就绪，触发时回退诚实错误并在日志给出明确提示（「run `opencode` once to log in」）。
 
-## 4. 工具中介：三层纵深，保证不在用户机器上跑工具
+## 4. 工具中介：默认纯文本，可选回传宿主
 
-委托只做「聊天通道」。模型在 opencode 会话里想调任何原生工具，都被按住：
+### 4.1 默认：纯文本（ask-then-reject）
+
+委托默认只做「聊天通道」。模型在 opencode 会话里想调任何原生工具，都被按住：
 
 1. **会话级 permission 数组**：`POST /session` 带 `{permission: '*', action: 'ask'}`（每个原生操作都先问）+ `question/websearch/webfetch/task/plan_*` 等显式 `deny`。这份策略与注入运行时的 `OPENCODE_CONFIG_CONTENT` 用**同一份常量**，两份副本永不漂移（参考实现曾因漂移踩过免费层门禁）。
 2. **ask-then-reject 监视器**：回合进行中并发轮询 `GET /permission`，对每个挂起审批回 `POST /permission/{id}/reply {reply:'reject'}`，附「本会话无工具，只用纯文本回答」。每回合拒绝数有上限，超限即中止（防模型死循环卡死回合）。
 3. **响应体扫描**：回合完成按 **`info.error` 有无** 判成败后（见 §5），扫描 `parts`——任何「非已拒绝且已报错」的 `tool` part 都是中介失效，整回合拒绝并报错。没有任何原生动作可能执行。
 
-环境隔离：子进程用隔离 XDG 根 + 白名单环境变量（`PATH/HOME/…`，**不继承任何第三方 key 或 OpenCode auth 覆盖**）+ `OPENCODE_DISABLE_CLAUDE_CODE` / `OPENCODE_DISABLE_EXTERNAL_SKILLS` / `OPENCODE_DISABLE_AUTOUPDATE` / `OPENCODE_DISABLE_PROJECT_CONFIG` + 随机服务密码 + 每次启动全新隔离目录（不读用户自己的 opencode 配置/会话）。
+### 4.2 工具中继（`tools: true`，design B）
+
+开启后，模型的原生工具调用不再被永久拒绝，而是回传给 DSH 执行；opencode 本地仍然零执行：
+
+1. **权限策略**：`DELEGATE_TOOL_PERMISSION_POLICY` 仍是 `*: ask`，但只本地 `deny` 没有宿主对应的 `task`/`codesearch`/`plan_enter`/`plan_exit`。`question`/`websearch`/`webfetch`/`todowrite` 可以进入捕获。
+2. **审批门捕获 + abort**：监视器发现当前会话的待审批项后，快照 `callID`/`permission`/`metadata`，等 200ms 收齐并行调用，然后 `POST /session/{id}/abort`。它**从不 reply allow**，所以本地不执行。
+3. **权限列表坏掉时的回退**：OpenCode 1.18.35 的 `grep` 会让全局 `GET /permission` 因 `metadata.include = undefined` 返回 400。监视器改用 `GET /session/{id}/message`，从 in-flight tool part 的 `callID` + `state.input` 捕获，再 abort；不会在 400 上空转。
+4. **只回传捕获到的调用**：被本地 deny 的工具不进入回传；响应里任何 `status !== 'error'` 的 tool part 都说明本地执行泄漏，整回合以 `native_tool_activity` 失败。正常 abort 的响应是 `MessageAbortedError` + interrupted-error tool parts；即使响应丢了 parts，门快照仍能提供 name/input。
+5. **收尾**：abort 之后，对当前会话捕获到的审批 id reply `reject`（拒绝不会执行工具），再删除会话。`GET /permission` 是全局的，旧会话/外部会话的条目一律不碰，避免下一次新会话把旧 callID 当成自己的调用无限回放。
+6. **回传与重播种**：捕获到的调用变成 DSH 的 `tool-call` 块，由宿主执行；下一次请求把包含 `toolResult` 的完整历史以 JSON 重新播种给新的 opencode 会话，循环到模型给出文本。每个 DSH 请求都是新会话，无状态。
+
+工具名/参数改写：
+
+| 委托原生 | DSH 宿主 | 参数改写 |
+|---|---|---|
+| `bash` | `bash` | 自动补必填 `description` |
+| `read` | `read` | `path` → `file_path` |
+| `edit` | `edit` | `filePath/oldString/newString/replaceAll` → `file_path/old_string/new_string/replace_all` |
+| `write` | `write` | `filePath` → `file_path` |
+| `glob` / `grep` | 同名 | — |
+| `webfetch` | `web_fetch` | 未知键按宿主 schema 裁剪 |
+| `websearch` | `web_search` | `query` → `queries[]` |
+| `question` | `ask_user_question` | — |
+| `todowrite` | `todo_write` | — |
+| `task` / `codesearch` / `plan_*` | 无对应 | **本地 deny** |
+
+`cwd`：空字符串 = DSH 进程的 `process.cwd()`；绝对路径 = 固定工作目录；路径不存在时回退到隔离 project 目录。文本模式忽略 `cwd`，始终待在隔离目录。
+
+环境隔离：子进程用隔离 XDG 根 + 白名单环境变量（`PATH/HOME/…`，**不继承任何第三方 key 或 OpenCode auth 覆盖**）+ `OPENCODE_DISABLE_CLAUDE_CODE` / `OPENCODE_DISABLE_EXTERNAL_SKILLS` / `OPENCODE_DISABLE_AUTOUPDATE` / `OPENCODE_DISABLE_PROJECT_CONFIG` + 随机服务密码 + 每次启动全新隔离目录（不读用户自己的 opencode 配置/会话）。两种模式共用这套隔离。
 
 ## 5. 判成败的坑：HTTP 200 + `info.error`
 
@@ -95,7 +133,12 @@
 - **MEMORY/GOGC 与 EmptyWorkingSet 是尽力而为**：GOMEMLIMIT 是软上限，极端负载下物理占用仍可能冲高；内存回收只在 Windows 生效。
 - **凭据刷新语义**：种子的 `auth.json` 是用户登录时的快照；opencode CLI 侧刷新/登出不会自动同步（删 `<dataDir>/delegate/opencode/data/opencode/auth.json` 可强制重种）。
 - **协议形状来自参考实现**：本机出口 IP 被 opencode 生成接口全拒（2026-10-19 起），无法对 live 服务器做形状验证；所有端到端验证走本地 mock `opencode serve`。若上游协议漂移，以参考实现（reisen-ww/opengate）为准。
+- **工具中继是回合制的**：每个工具批次都会结束一次委托回合并重新播种历史，多步任务会产生多次委托请求；不是 token 级增量，也不是同会话续命。
+- **`grep` 权限列表毒化**：OpenCode 1.18.35 的 `grep` 会让全局 `GET /permission` 返回 400。回退路径能避免卡死并完成工具回合，但列表本身要重启运行时（重启 DSH）才恢复；期间其他本地 opencode 会话的审批列表也不可用。
+- **`cwd` 必须存在**：工具模式写绝对路径时，路径不存在会回退到隔离目录，模型看到的路径可能与 DSH 不一致。
+- **本地 deny 的工具没有宿主对应**：`task`/`codesearch`/`plan_*` 会立即收到本地错误；需要这些能力时得先在宿主侧提供同名工具。
+- **429 仍可能出现**：委托解决的是「额度错误无法触发委托」的 bug，不改变上游免费额度本身。
 
 ## 8. 测试
 
-`test/delegate.test.ts`（19 项，mock `opencode serve` 本地端口）+ `test/delegation-adapter.test.ts`（8 项，adapter 兜底顺序）。覆盖：凭据种子（只取 `opencode` 条目 / 0600 / 候选优先级 / 缺凭据）、版本门槛 accept/reject、二进制回退顺序、HTTP-200-with-`info.error` 判失败、工具 ask-then-reject、非预期 tool part 拒绝、空回合诚实报错、adapter 兜底链（匿名 → 姊妹 → 委托 → 诚实错误）与「委托关闭路径逐字节不变」。
+`test/delegate.test.ts`（29 项，mock `opencode serve` 本地端口）+ `test/delegation-adapter.test.ts`（10 项，adapter 兜底顺序）；全仓 `pnpm test` 449 项。覆盖：凭据种子（只取 `opencode` 条目 / 0600 / 候选优先级 / 缺凭据）、版本门槛 accept/reject、二进制回退顺序、HTTP-200-with-`info.error` 判失败、工具 ask-then-reject、工具中继的捕获/abort/回传、权限列表 400 时从 session message 回退、会话隔离清理、429 首次委托、非预期 tool part 拒绝、空回合诚实报错、adapter 兜底链（匿名 → 姊妹 → 委托 → 诚实错误）与「委托关闭路径逐字节不变」。

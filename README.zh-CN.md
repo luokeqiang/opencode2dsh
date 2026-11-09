@@ -15,6 +15,12 @@
 
 </div>
 
+> **Fork 说明：** 本仓库是
+> [FishBottle7/opencode2dsh](https://github.com/FishBottle7/opencode2dsh)
+> 的维护 fork，新增可选的工具中继模式（由 DSH 执行工具）以及 429/权限门修复。
+> npm 上的包仍是上游发布；本 fork 请从 [Releases](../../releases/latest)
+> 安装，详见 [FORK.md](FORK.md)。
+
 ---
 
 opencode2dsh 会向 DSH 注册一个原生的 `LlmAdapter`，直接流式对接
@@ -39,19 +45,26 @@ OpenCode 官方 CLI 无需登录即可使用的那批免费模型，它们会以
 
 ## 安装
 
-**从插件市场安装**（推荐，收录后可用）：在 DSH 里打开 **设置 → 插件市场**，
+**从本 fork 的 [Releases](../../releases/latest) 安装**（本 fork 推荐，含工具中继）：
+下载 `.tgz` 后：
+
+```sh
+dsh plugin --profile web add ./opencode2dsh-dsh-plugin-<version>.tgz
+```
+
+**从插件市场安装**（上游包，收录后可用）：在 DSH 里打开 **设置 → 插件市场**，
 搜索 `opencode2dsh`，一键安装。
 
-**从 npm 安装**：
+**从 npm 安装**（上游包，不含工具中继）：
 
 ```sh
 dsh plugin --profile web add @opencode2dsh/dsh-plugin
 ```
 
-**从源码安装**（自行打包）：
+**从源码安装**（自行打包本 fork）：
 
 ```sh
-git clone https://github.com/FishBottle7/opencode2dsh.git
+git clone <this-repo>
 cd opencode2dsh/packages/plugin
 pnpm install && pnpm pack
 dsh plugin --profile web add ./opencode2dsh-dsh-plugin-<version>.tgz
