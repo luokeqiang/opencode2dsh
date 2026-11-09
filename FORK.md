@@ -38,7 +38,7 @@ DSH 执行，再把 `toolResult` 重新播种回下一轮。
 |---|---|
 | `master` | 上游镜像，保持与 `FishBottle7/opencode2dsh` 一致 |
 | `dsh/tools-relay` | fork 功能分支（本仓库默认分支） |
-| `v0.3.14-dsh.N` | 从 `dsh/tools-relay` 打的发布标签 |
+| `v0.3.15-dsh.N` | 从 `dsh/tools-relay` 打的发布标签 |
 
 发布流程由 `.github/workflows/release.yml` 执行：`pnpm typecheck` →
 `pnpm test` → `pnpm pack` → 创建 GitHub Release，附带 `.tgz` 与

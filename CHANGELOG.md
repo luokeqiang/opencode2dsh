@@ -1,6 +1,6 @@
 # Changelog
 
-## Fork — unreleased
+## Fork — 0.3.15-dsh.1
 
 Maintained fork on top of upstream `37d3ea2`; see `FORK.md`.
 
