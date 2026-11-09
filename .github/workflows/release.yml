@@ -58,6 +58,21 @@ jobs:
           cd dist
           sha256sum *.tgz > SHA256SUMS
 
+      # Publish the curated CHANGELOG section instead of GitHub's auto-notes:
+      # direct pushes have no PRs, so --generate-notes emits only a compare link.
+      - name: Extract release notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v heading="## Fork — $version" '
+            $0 == heading { capture = 1; next }
+            capture && /^## / { exit }
+            capture { print }
+          ' ../../CHANGELOG.md > dist/RELEASE_NOTES.md
+          test -s dist/RELEASE_NOTES.md || {
+            echo "CHANGELOG.md has no section for $GITHUB_REF_NAME" >&2
+            exit 1
+          }
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -65,4 +80,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             dist/*.tgz dist/SHA256SUMS \
             --title "$GITHUB_REF_NAME" \
-            --generate-notes
+            --notes-file dist/RELEASE_NOTES.md
